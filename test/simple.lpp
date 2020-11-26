@@ -1,0 +1,4 @@
+T = /t f.t;
+F = /t f.f;
+or = /p q.(p T q);
+main = or T F;

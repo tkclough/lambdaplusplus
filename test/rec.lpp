@@ -1,0 +1,2 @@
+fib = /n.(add (fib (sub n one) (sub n two)));
+main = fib two;

@@ -1,3 +1,9 @@
 .stack-work/
 lambdaplusplus.cabal
 *~
+.vscode/
+*.tix
+.idea/
+*.cabal
+logfile
+stack.yaml.lock

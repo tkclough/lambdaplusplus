@@ -1,89 +1,83 @@
 {-# LANGUAGE TemplateHaskell #-}
-
 module Main where
 
-import Lib
-import StrictSyntax (fromExtended)
-import Parser (parseDeclarations)
-import System.Environment (getArgs)
-import Data.Maybe (isJust, fromJust)
+import System.Console.Haskeline
+import System.Environment
+import Control.Monad.State
+import Data.Map (Map)
+import Data.Maybe
+import Data.List (intercalate)
+import Data.Either
+import Lens.Micro.Platform
+
 import qualified Data.Map as M
-import Debug.Trace (traceShow)
+
+import Parser (parseConsoleInput, parseProgram)
+import Language
+import Conversion
+import Compile (compile, expandNew)
+import Prims (builtins)
+
+data ProgramState a = ProgramState {
+  _mappings :: Map Name UntypedExpr
+}
+makeLenses ''ProgramState
+
+formatResult :: TypedResult -> String 
+formatResult r = case r of
+    UntypedResult e -> show e
+    NatResult (Nat n) -> show n
+    BoolResult b -> show b
+    ListResult xs -> "[" ++ intercalate ", " (map formatResult xs) ++ "]"
+    PairResult (Pair (x, y)) -> "(" ++ formatResult x ++ ", " ++ formatResult y ++ ")"
 
 main :: IO ()
 main = do
   args <- getArgs
-  case args of
-    [] -> putStrLn "Expected a file"
-    file:_ -> do
-      contents <- readFile file
-      let eitherDecls = parseDeclarations contents
-      case eitherDecls of
-        Left err -> putStrLn $ "Parse error: " ++ err
-        Right decls' -> do
-          print decls'
-          let strictDecls = M.map fromExtended decls'
-              expanded = traceShow strictDecls $ compile "main" strictDecls
-          if isJust expanded
-            then do let reduced = reduceNormal $ fromJust expanded
-                    putStrLn . format $ reduced
-            else putStrLn "reduction failed"
+  bindings <- fromRight [] <$> case args of
+    [fd] -> do
+      contents <- readFile fd
+      return $ parseProgram fd contents
 
+    _ -> return $ Right []
+  let (Just bindings') = traverse toUntyped $ compile (M.map toTyped $ M.fromList bindings `M.union` builtins)
+  runInputT defaultSettings (evalStateT loop (ProgramState bindings'))
+  where 
+      loop :: StateT (ProgramState a) (InputT IO) ()
+      loop = do
+        minput <- lift $ getInputLine "% "
+        case minput of
+          Just input ->
+            case parseConsoleInput input of
+              Right ci -> case ci of
+                Assignment (y,e) -> do
+                  bindings <- gets _mappings
+                  let e' = fromJust $ expandNew bindings e
+                  modify (over mappings (M.insert y e'))
+                  lift . outputStrLn $ show e'
+                  loop
 
-{-
-compile :: Map Name Expr -> Name -> Expr
-compile decls entry = 
-  let fvs = M.map freeVars decls
-      asList = M.toList fvs
-      lnodes = zip [0..] $ map fst asList
-      ledges = concatMap (\((name, fv), (_, i)) -> ()) (zip asList lnodes)
--}
--- Dependency Graph: DynGraph Name ()
--- Declarations: Map Name Expr
+                Evaluation ev -> do
+                  bindings <- gets _mappings
 
--- data Env = Env {
---   _decl :: Map Name Expr,
---   _dep :: Graph
--- }
--- makeLenses ''Env
+                  let ev' = case ev of
+                              TypedEvaluation e t -> TypedEvaluation (fromJust $ expandNew bindings e) t
+                              UntypedEvaluation e -> UntypedEvaluation (fromJust $ expandNew bindings e)
 
--- main :: IO ()
--- main = runInputT defaultSettings (evalStateT loop (Env G.empty M.empty 0))
---   where 
---     popNode = do
---       x <- use node
---       node += 1
---       return x
+                  let out = evaluate 10000 ev'
+                  case out of
+                    Just x -> lift $ outputStrLn $ formatResult x
+                    Nothing -> lift $ outputStrLn "Nothing"
+                  loop
 
---     loop :: StateT Env (InputT IO) ()
---     loop = do
---       input <- lift $ getInputLine "$ "
---       case input of
---         Nothing -> return ()
---         Just l -> do
---           let consoleInput = parseConsoleInput l
---           case consoleInput of
---             Right (Reduction s) -> do
---               -- convert to strict form
---               let s' = fromExtended s
---               lift . outputStrLn $ "expr: " ++ format s'
---               built <- flip buildTerm s' <$> use decl
---               lift . outputStrLn $ "substituted: " ++ format built
---               lift . outputStrLn $ "reduced: " ++ format (reduceNormal built)
---             Right (Assignment (v, s)) -> do
---               let s' = fromExtended s
---                   fvs = S.toList $ freeVars s'
---               -- make a new node for each fv and for v
---               nextNode <- popNode
---               dep %= G.insNode (nextNode, v)
+                Command (Show Bindings) -> do
+                  bindings <- M.assocs <$> gets _mappings
+                  forM_ bindings $ \(y,e) -> do
+                    let s = y ++ " = " ++ (show e)
+                    lift $ outputStrLn s
 
---               forM_ fvs $ \fv -> do
---                 nextNode <- popNode
---                 dep %= G.insNode (nextNode, fv)
-              
---               -- insert declaration
---               decl %= M.insert v s'
+                  lift . outputStrLn $ "Total Count: " ++ show (length bindings)
 
---               lift . outputStrLn $ "ok."
---             Left e -> lift . outputStrLn $ "error: " ++ e
---       loop
+                  loop
+              Left err -> loop
+          _ -> loop

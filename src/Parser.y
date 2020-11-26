@@ -1,81 +1,92 @@
 {
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# OPTIONS -w #-}
+module Parser where
 
-module Parser (
-    parseExpr,
-    parseDeclaration,
-    parseDeclarations,
-    parseConsoleInput
-) where
-
+import Language
 import Lexer
-import Syntax
-import Data.Map (Map, fromList)
-
-import Control.Monad.Except
 }
 
+%name expr Expr
+%name program Program
+%name consoleInput ConsoleInput
 %tokentype { Token }
+%monad { Alex }
+%lexer { lexwrap } { Token _ TokenEOF }
+%error { happyError }
 
 %token
-    '/' {TokenLambda}
-    '.' {TokenDot}
-    '(' {TokenLParen}
-    ')' {TokenRParen}
-    '=' {TokenEq}
-    ';' {TokenSemi}
-    VAR {TokenSym $$}
+      '/'      { Token _ TokenLambda }
+      as        { Token _ TokenAs }
+      name      { Token _ (TokenName $$) }
+      nat       { Token _ TokenTypeNat }
+      list      { Token _ TokenTypeList }
+      pair      { Token _ TokenTypePair }
+      bool      { Token _ TokenTypeBool }
+      show      { Token _ TokenShow }
+      bindings  { Token _ TokenBindings }
+      '.'       { Token _ TokenDot }
+      '('       { Token _ TokenLParen }
+      ')'       { Token _ TokenRParen }
+      '='       { Token _ TokenEq }
+      ';'       { Token _ TokenSemi }
+      ':'       { Token _ TokenColon }
 
-%monad { Except String } { (>>=) } { return }
-%error { parseError }
-
-%name expr Expr
-%name declaration Declaration
-%name declarations Declarations
-%name consoleInput ConsoleInput
 %%
-ConsoleInput : Expr             { Reduction $1 }
-             | Declaration      { Assignment $1 }
 
-Declarations : Declaration ';'              { [$1] }
-             | Declaration ';' Declarations { $1:$3 }
+Program : Assignment ';' Program    { $1:$3 }
+        | Assignment ';'            { [$1] }
 
-Declaration : VAR '=' Expr      { ($1, $3) }
+ConsoleInput : Assignment           { Assignment $1 }
+             | Evaluation           { Evaluation $1 }
+             | Command              { Command $1   }
 
-Expr : '/' Variables '.' Expr   { Lam $2 $4 }
-     | Fact                     { $1 }
+Assignment : name '=' Expr          { ($1, $3) }
+           | name Names '=' Expr    { ($1, foldr (\n e -> ULam n e) $4 $2)}
+           
+Evaluation : Expr                   { UntypedEvaluation $1 }
+           | Expr as Type           { TypedEvaluation $1 $3 }
 
-Fact : Fact Atom                { App $1 $2 }
-     | Atom                     { $1 }
+Command : ':' ConsoleCommand        { $2 }
 
-Atom : '(' Expr ')'             { $2 }
-     | VAR                      { Var $1 } 
+ConsoleCommand : show ConsoleShowable { Show $2 }
 
-Variables : VAR Variables       { $1:$2 }
-          | VAR                 { [$1] }
+ConsoleShowable : bindings            { Bindings }
+
+Expr : '/' Names '.' Expr           { foldr (\n e -> ULam n e) $4 $2 }
+     | Term                         { $1 }
+    
+Names : name Names                  { $1:$2 }
+      | name                        { [$1] }
+
+Term : Term Factor                  { UApp $1 $2 }
+     | Factor                       { $1 }
+
+Factor : name                       { UVar $1 }
+       | '(' Expr ')'               { $2 }
+
+Type : nat                          { NatType }
+     | bool                         { BoolType }
+     | list Type                    { ListType $2 }
+     | pair Type Type               { PairType $2 $3 }
+     | '(' Type ')'                 { $2 }
 
 {
-parseError :: [Token] -> Except String a
-parseError (l:ls) = throwError (show l)
-parseError [] = throwError "Unexpected end of input"
+lexwrap :: (Token -> Alex a) -> Alex a
+lexwrap = (alexMonadScan' >>=)
 
-parseDeclarations :: String -> Either String (Map Name Expr)
-parseDeclarations input = runExcept $ do
-  tokenStream <- scanTokens input
-  fromList <$> declarations tokenStream
+happyError :: Token -> Alex a
+happyError (Token p t) =
+  alexError' p ("parse error at token '" ++ unLex t ++ "'")
 
-parseDeclaration :: String -> Either String (Name, Expr)
-parseDeclaration input = runExcept $ do
-  tokenStream <- scanTokens input
-  declaration tokenStream
+parseExpr :: String -> Either String UntypedExpr
+parseExpr input = runAlex input expr
 
-parseExpr :: String -> Either String Expr
-parseExpr input = runExcept $ do
-  tokenStream <- scanTokens input
-  expr tokenStream
+--parseExpr' :: String -> Either String (TypedExpr a)
+--parseExpr' input = toTyped <$> parseExpr input
 
-parseConsoleInput :: String -> Either String ConsoleInput
-parseConsoleInput input = runExcept $ do
-  tokenStream <- scanTokens input
-  consoleInput tokenStream
+parseProgram :: FilePath -> String -> Either String (Program a)
+parseProgram = runAlex' program
+
+parseConsoleInput :: String -> Either String (ConsoleInput a)
+parseConsoleInput input = runAlex input consoleInput
 }

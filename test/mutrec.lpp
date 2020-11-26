@@ -1,0 +1,3 @@
+isEven = /n.((isZero n) T (isOdd (pred n)));
+isOdd = /n.((isZero n) F (isEven (pred n)));
+main = isEven two;
